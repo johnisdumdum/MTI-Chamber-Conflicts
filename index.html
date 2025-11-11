@@ -798,48 +798,52 @@ const panelOpener = document.getElementById('panelOpener');
 const hideBtn = document.getElementById('hidePanelBtn');
 
 // function to forcibly hide the panel (handles mobile bottom-sheet and overlays)
+// ----- REPLACEMENT / ADDITION: hidePanel() -----
 function hidePanel() {
   panelHidden = true;
 
-  // If a search overlay is visible, hide it too
+  // hide any overlay search if present
   try { if (typeof hideOverlaySearch === 'function') hideOverlaySearch(); } catch(e){}
 
-  // Remove bottom-sheet mode and hide the panel element
   try {
+    // remove bottom-sheet so mobile won't force it back
     panel.classList.remove('bottom-sheet');
-    // remove any inline show flags and enforce hidden
     panel.style.display = 'none';
+    panel.setAttribute('aria-hidden', 'true');
   } catch (e) { console.warn('hidePanel: cannot hide panel', e); }
 
-  // Desktop: show opener; Mobile: opener is hidden by CSS, but ensure mini toolbar visible
+  // ensure mini toolbar remains visible on phones and opener shows on desktop
   updateMiniToolbarVisibility();
 
-  // Give map a chance to recalc size if it becomes visible again later
+  // allow map to reflow later if needed
   try { setTimeout(() => map.invalidateSize(), 250); } catch(e){}
 }
 
+
 // function to show the panel in an appropriate mode for the current screen size
+// ----- REPLACEMENT / ADDITION: showPanel() -----
 function showPanel() {
   panelHidden = false;
 
-  // Close overlay search (if any) so the panel is the primary focus
-  try { if (typeof hideOverlaySearch === 'function') hideOverlaySearch(); } catch(e){}
-
   try {
     if (isPhoneWidth()) {
-      // mobile: show as bottom-sheet so it behaves like the existing mobile UI
+      // mobile: set up as bottom-sheet and make visible
       panel.classList.add('bottom-sheet');
       panel.style.display = 'block';
+      panel.setAttribute('aria-hidden', 'false');
     } else {
-      // desktop: ensure normal panel display
+      // desktop: normal panel view
       panel.classList.remove('bottom-sheet');
       panel.style.display = 'block';
+      panel.setAttribute('aria-hidden', 'false');
     }
-  } catch (e) { console.warn('showPanel: cannot show panel', e); }
+  } catch (e) { console.warn('showPanel error', e); }
 
+  // now reconcile visibility
   updateMiniToolbarVisibility();
   try { setTimeout(() => map.invalidateSize(), 250); } catch(e){}
 }
+
 
 // Wire the Hide button
 if (hideBtn) {
@@ -898,27 +902,41 @@ miniExpandBtn.addEventListener('click', () => {
 
 // REPLACEMENT: updateMiniToolbarVisibility (respects panelHidden and shows/hides the opener)
 
+// ----- REPLACEMENT: updateMiniToolbarVisibility -----
 function updateMiniToolbarVisibility() {
   const mt = document.getElementById('miniToolbar');
   const panel = document.getElementById('controls');
   const opener = document.getElementById('panelOpener');
 
+  // PHONE behaviour
   if (isPhoneWidth()) {
-    // mobile: always show mini toolbar, hide the desktop opener and panel
-    mt.style.display = 'flex';
-    panel.style.display = 'none';
-    opener.style.display = 'none';
-  } else {
-    // desktop: show either panel or opener depending on panelHidden
-    mt.style.display = 'none';
-    if (panelHidden) {
+    // always show mini toolbar on phones
+    if (mt) mt.style.display = 'flex';
+
+    // Show panel on phone only when it's not hidden and is intended to be a bottom-sheet
+    if (!panelHidden && panel && panel.classList.contains('bottom-sheet')) {
+      panel.style.display = 'block';
+      panel.setAttribute('aria-hidden', 'false');
+    } else if (panel) {
       panel.style.display = 'none';
-      opener.style.display = 'flex';
-    } else {
-      opener.style.display = 'none';
-      // only show the panel normally when it isn't used as a bottom-sheet
-      panel.style.display = panel.classList.contains('bottom-sheet') ? 'block' : 'block';
+      panel.setAttribute('aria-hidden', 'true');
     }
+
+    // desktop opener shouldn't appear on phones
+    if (opener) opener.style.display = 'none';
+    return;
+  }
+
+  // DESKTOP behaviour
+  if (mt) mt.style.display = 'none';
+  if (panelHidden) {
+    // panel collapsed: hide the panel and show the opener handle
+    if (panel) { panel.style.display = 'none'; panel.setAttribute('aria-hidden', 'true'); }
+    if (opener) opener.style.display = 'flex';
+  } else {
+    // panel visible: hide opener and show the panel (as normal)
+    if (opener) opener.style.display = 'none';
+    if (panel) { panel.style.display = panel.classList.contains('bottom-sheet') ? 'block' : 'block'; panel.setAttribute('aria-hidden', 'false'); }
   }
 }
 
