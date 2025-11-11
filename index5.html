@@ -1,0 +1,849 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Toronto RODAR 77 — Site availability (ONSITE_HOURS + future check)</title>
+
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<style>
+  html,body{height:100%;margin:0;font-family:system-ui,Segoe UI,Roboto,Arial}
+  #map{height:100vh;width:100%}
+
+  /* Full control panel (desktop / expanded) */
+  .topright-panel {
+    position:absolute; top:10px; right:10px; z-index:1000;
+    background: rgba(255,255,255,0.98); padding:10px; border-radius:8px;
+    box-shadow:0 6px 18px rgba(0,0,0,0.12); font-size:14px; max-width:420px;
+  }
+  .controls-row{display:flex; gap:8px; align-items:center; margin-bottom:8px; flex-wrap:wrap;}
+  button, select, input { padding:7px 8px; border-radius:6px; border:1px solid rgba(0,0,0,0.12); background:#fff; font-size:13px; }
+  .legend { display:flex; gap:12px; align-items:center; margin-top:6px; flex-wrap:wrap;}
+  .dot { width:14px; height:14px; border-radius:50%; display:inline-block; margin-right:6px;}
+  .info { font-size:13px; color:#333; margin-top:8px; }
+
+  /* Search box and dropdown */
+  .search-container { position:relative; width:100%; }
+  .search-input { width:100%; box-sizing:border-box; }
+  .suggestions { position:absolute; left:0; right:0; top:100%; background:#fff; border:1px solid rgba(0,0,0,0.12); max-height:220px; overflow:auto; z-index:1200; border-radius:6px; margin-top:6px; box-shadow:0 6px 12px rgba(0,0,0,0.12);} 
+  .suggestions div { padding:8px 10px; cursor:pointer; border-bottom:1px solid rgba(0,0,0,0.03); }
+  .suggestions div:hover{ background:#f4f4f4; }
+  .suggestions .muted { font-size:12px; color:#666; }
+
+  /* list view */
+  .list-container { position:absolute; top:0; left:0; right:0; bottom:0; z-index:800; background:#fff; overflow:auto; display:none; padding:18px; }
+  .list-table { width:100%; border-collapse:collapse; font-size:14px; }
+  .list-table thead th { text-align:left; padding:10px 8px; border-bottom:2px solid #e6e6e6; }
+  .list-table tbody td { padding:10px 8px; border-bottom:1px solid #f2f2f2; vertical-align:top; }
+  .list-empty { padding:18px; color:#666; }
+  .view-map-btn { padding:6px 8px; border-radius:6px; font-size:13px; }
+
+  /* popup readability tweaks */
+  .leaflet-popup-content { font-size:15px; line-height:1.4; max-width:90vw; }
+  .leaflet-container .leaflet-popup-content-wrapper { max-width:360px; }
+  .site-popup-reason { display:block; margin-bottom:6px; }
+  .site-popup-more { display:block; margin-top:6px; text-decoration:underline; cursor:pointer; color:#0077cc; }
+
+  /* mobile improvements - default mobile layout hides the full panel and shows a compact toolbar */
+  @media (max-width:600px) {
+    .topright-panel { display:none; }
+
+    /* compact floating toolbar */
+    .mini-toolbar {
+      position: fixed; right: 10px; bottom: 10px; z-index:1300;
+      display:flex; gap:8px; align-items:center; padding:6px; border-radius:28px;
+      background: rgba(255,255,255,0.94); box-shadow:0 10px 24px rgba(0,0,0,0.18);
+      height:48px; min-height:44px;
+    }
+    .mini-toolbar button { background:transparent; border:none; padding:8px; min-width:44px; min-height:44px; border-radius:8px; }
+    .mini-toolbar button:active { transform:translateY(1px); }
+
+    /* full panel becomes a bottom sheet when expanded */
+    .bottom-sheet {
+      display:block !important; position:fixed; left:6px; right:6px; bottom:6px; top:auto; border-radius:12px; max-height:72vh; overflow:auto; z-index:1400; padding:10px;
+      box-shadow:0 20px 40px rgba(0,0,0,0.28);
+    }
+
+    /* hide desktop-style controls inside panel that cause wrapping; replace with compact control */
+    .controls-row { gap:6px; }
+    button, select, input { min-height:44px; font-size:15px; padding:10px 12px; }
+
+    /* suggestions & list touch targets larger */
+    .suggestions div { min-height:46px; padding:12px 12px; }
+  }
+
+  /* desktop: keep original positioning for panel when .bottom-sheet not used */
+  .topright-panel.bottom-sheet { display:block; }
+
+  /* search overlay (fullscreen) */
+  #searchOverlay { display:none; position:fixed; inset:0; z-index:1500; background:rgba(0,0,0,0.35); }
+  #searchOverlay .overlay-inner { position:absolute; left:6px; right:6px; top:8px; background:#fff; border-radius:10px; padding:10px; box-shadow:0 10px 24px rgba(0,0,0,0.2); }
+  #searchOverlay .overlay-inner input { width:100%; box-sizing:border-box; font-size:17px; padding:12px; }
+  #searchOverlay .overlay-inner .suggestions { position:relative; top:8px; max-height:60vh; }
+
+</style>
+</head>
+<body>
+<div id="map" role="application" aria-label="Toronto closures and site availability map"></div>
+
+<!-- list view container (hidden by default) -->
+<div id="listContainer" class="list-container" aria-hidden="true"></div>
+
+<!-- full panel (desktop / expanded) -->
+<div class="topright-panel" id="controls">
+  <div class="search-container" style="margin-bottom:8px;">
+    <input id="searchInput" class="search-input" type="search" placeholder="Search asset by name (partial, case-insensitive)" aria-label="Search assets">
+    <div id="suggestions" class="suggestions" style="display:none;"></div>
+  </div>
+
+  <div class="controls-row">
+    <button id="refreshBtn" title="Refresh data">Refresh</button>
+    <button id="toggleViewBtn" title="Toggle map / list">List view</button>
+    <label for="bufferSelect">Buffer</label>
+    <select id="bufferSelect" title="Buffer distance (meters)">
+      <option value="20">20 m</option>
+      <option value="30" selected>30 m</option>
+      <option value="50">50 m</option>
+      <option value="100">100 m</option>
+    </select>
+  </div>
+
+  <div class="controls-row" style="margin-top:6px; gap:6px; align-items:center;">
+    <div style="display:flex; gap:6px; align-items:center;">
+      <label for="overrideDate" style="font-size:13px;">Check date</label>
+      <input id="overrideDate" type="date" title="Select date to evaluate" />
+      <input id="overrideTime" type="time" title="Select time to evaluate" />
+      <button id="applyOverride" title="Apply date/time">Apply</button>
+      <button id="clearOverride" title="Clear override">Clear</button>
+    </div>
+  </div>
+
+  <div style="display:flex; gap:10px; align-items:center; margin-top:6px;">
+    <div style="font-weight:600">Legend:</div>
+    <div class="legend">
+      <div><span class="dot" style="background:green"></span>Available</div>
+      <div><span class="dot" style="background:red"></span>Occupied (At selected time)</div>
+    </div>
+  </div>
+
+  <div class="info" id="statusLine">Loading…</div>
+</div>
+
+<!-- compact floating toolbar for phones -->
+<div class="mini-toolbar" id="miniToolbar" style="display:none;">
+  <button id="miniSearchBtn" title="Search" aria-label="Search">🔎</button>
+  <button id="miniRefreshBtn" title="Refresh" aria-label="Refresh">🔄</button>
+  <button id="miniBufferBtn" title="Buffer" aria-label="Buffer">📏</button>
+  <button id="miniExpandBtn" title="Open menu" aria-label="Open menu">☰</button>
+</div>
+
+<!-- fullscreen search overlay (mobile focused search) -->
+<div id="searchOverlay" aria-hidden="true">
+  <div class="overlay-inner">
+    <input id="overlaySearchInput" type="search" placeholder="Search assets" aria-label="Search assets" />
+    <div id="overlaySuggestions" class="suggestions" style="display:none;"></div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/papaparse@5.3.2/papaparse.min.js"></script>
+
+<script>
+/* CONFIGURATION */
+const RODAR_GEOJSON_URL = 'https://gis.toronto.ca/arcgis/rest/services/cot_geospatial2/FeatureServer/77/query?where=1%3D1&outFields=*&f=geojson';
+let LOCATIONS_CSV_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vRBLaHly-_gdGVQZOVD5J0pcsgCaeEkeBhBUPxCd9nj6r1EryuT9z5qLP5oVLj-Z-Y9vCIxsErNCbqU/pub?output=csv';
+let MANUAL_CLOSURES_CSV_URL = '';
+let BUFFER_METERS = 30;
+
+/* APP STATE */
+const map = L.map('map', { center: [43.6532, -79.3832], zoom: 11 });
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '&copy; OpenStreetMap contributors' }).addTo(map);
+
+const closurePolygonsLayer = L.geoJSON(null, { style: { color: '#ff4500', weight: 2, fillOpacity: 0.22 } }).addTo(map);
+const sitesLayer = L.layerGroup().addTo(map);
+
+let sites = [];
+let manualClosures = {};
+let closuresBufferedCollection = { type:'FeatureCollection', features: [] };
+let overrideDateTime = null; // if set, evaluate closures at this Date object instead of now
+let isListView = false;
+
+/* Touch / phone detection */
+const isTouch = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
+const isPhoneWidth = () => window.innerWidth <= 600;
+const MARKER_RADIUS_PHONE = 13; // between 12-14 px recommended
+const DEFAULT_MARKER_RADIUS = isTouch && isPhoneWidth() ? MARKER_RADIUS_PHONE : (isTouch ? 10 : 7);
+
+/* NETWORK HELPERS */
+async function fetchWithTimeout(url, opts = {}, timeoutMs = 10000) {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, Object.assign({}, opts, { signal: controller.signal }));
+    clearTimeout(id);
+    return res;
+  } catch (err) {
+    clearTimeout(id);
+    throw err;
+  }
+}
+
+/* UTILITIES (unchanged) */
+function parseDateValue(v) {
+  if (v == null || v === '') return null;
+  if (v instanceof Date) return v;
+  if (typeof v === 'number') return new Date(v);
+  const asNum = Number(v);
+  if (!isNaN(asNum) && asNum > 1000000000) return new Date(asNum);
+  const d = new Date(v);
+  if (!isNaN(d)) return d;
+  const d2 = new Date(String(v).replace(' ', 'T'));
+  if (!isNaN(d2)) return d2;
+  return null;
+}
+function activeAtReference(startDate, endDate, referenceDateTime) {
+  if (!referenceDateTime) referenceDateTime = new Date();
+  if (startDate && endDate) return (startDate.getTime() <= referenceDateTime.getTime()) && (endDate.getTime() >= referenceDateTime.getTime());
+  if (startDate && !endDate) return startDate.getTime() <= referenceDateTime.getTime();
+  if (!startDate && endDate) return endDate.getTime() >= referenceDateTime.getTime();
+  return true;
+}
+
+/* ONSITE_HOURS parsing and evaluation (unchanged) */
+function parseTimeOfDay(str) {
+  if (!str) return null;
+  const m = String(str).trim().match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$/i);
+  if (!m) return null;
+  let hh = Number(m[1]);
+  const mm = Number(m[2] || 0);
+  const ampm = (m[3] || '').toLowerCase();
+  if (ampm === 'pm' && hh < 12) hh += 12;
+  if (ampm === 'am' && hh === 12) hh = 0;
+  if (hh < 0 || hh > 23 || mm < 0 || mm > 59) return null;
+  return { hh, mm };
+}
+function parseTimeRangeString(rangeStr) {
+  if (!rangeStr) return null;
+  const parts = rangeStr.split(/\b(?:to|\-|\–|\—)\b/i).map(s => s.trim()).filter(Boolean);
+  if (parts.length < 2) return null;
+  const a = parseTimeOfDay(parts[0]);
+  const b = parseTimeOfDay(parts[1]);
+  if (!a || !b) return null;
+  return { start: a, end: b };
+}
+
+function parseOnsiteHoursField(raw) {
+  if (!raw) return null;
+  const s = String(raw).trim();
+  const m = s.match(/^(.+?)\s+(Continuous|Daily|Weekdays|Weekends)\s*$/i);
+  let timeStr = null;
+  let type = 'CONTINUOUS';
+  if (m) { timeStr = m[1].trim(); type = m[2].toUpperCase(); }
+  else {
+    const m2 = s.match(/(Continuous|Daily|Weekdays|Weekends)\s*$/i);
+    if (m2) { type = m2[1].toUpperCase(); timeStr = s.substring(0, s.length - m2[0].length).trim(); }
+    else { timeStr = s; type = 'CONTINUOUS'; }
+  }
+  const tr = parseTimeRangeString(timeStr);
+  return { raw: s, range: tr, type };
+}
+
+function isReferenceWithinOnsiteHours(onsiteRaw, referenceDateTime) {
+  if (!referenceDateTime) referenceDateTime = new Date();
+  const parsed = parseOnsiteHoursField(onsiteRaw);
+  if (!parsed) return true; // permissive fallback
+  if (parsed.type === 'CONTINUOUS') return true;
+
+  const dow = referenceDateTime.getDay(); // 0 Sun - 6 Sat
+  if (parsed.type === 'WEEKDAYS' && !(dow >= 1 && dow <= 5)) return false;
+  if (parsed.type === 'WEEKENDS' && !(dow === 0 || dow === 6)) return false;
+
+  if (!parsed.range) return true;
+
+  const startDT = new Date(referenceDateTime.getFullYear(), referenceDateTime.getMonth(), referenceDateTime.getDate(), parsed.range.start.hh, parsed.range.start.mm, 0);
+  let endDT = new Date(referenceDateTime.getFullYear(), referenceDateTime.getMonth(), referenceDateTime.getDate(), parsed.range.end.hh, parsed.range.end.mm, 0);
+  if (endDT.getTime() <= startDT.getTime()) {
+    endDT = new Date(endDT.getTime() + 24*60*60*1000);
+  }
+  return referenceDateTime.getTime() >= startDT.getTime() && referenceDateTime.getTime() <= endDT.getTime();
+}
+
+/* RODAR buffering (unchanged) */
+function lineBufferFeature(fromLon, fromLat, toLon, toLat, bufferMeters, props) {
+  const line = { type:'Feature', properties: props || {}, geometry: { type:'LineString', coordinates: [ [fromLon, fromLat], [toLon, toLat] ] } };
+  try { return turf.buffer(line, bufferMeters, { units:'meters' }); } catch (err) { console.warn('Buffer error', err); return null; }
+}
+
+function buildBufferedClosuresFromGeojson(geojson, bufferMeters, referenceDateTime) {
+  if (!geojson || !geojson.features) return { type:'FeatureCollection', features: [] };
+  const buffered = [];
+  for (const feat of geojson.features || []) {
+    const props = feat.properties || {};
+    let start = parseDateValue(props.START_DATE) || parseDateValue(props.PLAN_START_LOCAL) || parseDateValue(props.PLAN_START_UTC) || parseDateValue(props.DATA_LOCAL_TIME);
+    let end = parseDateValue(props.END_DATE) || parseDateValue(props.PLAN_END_LOCAL) || parseDateValue(props.PLAN_END_UTC);
+
+    if (!activeAtReference(start, end, referenceDateTime)) continue;
+
+    const onsiteRaw = props.ONSITE_HOURS || props.ONSITE_HOUR || props.ONSITE || props['Onsite Hours'] || props.WORK_PERIOD || props.Work_Period;
+    if (onsiteRaw) {
+      if (!isReferenceWithinOnsiteHours(String(onsiteRaw), referenceDateTime)) continue;
+    }
+
+    const fromLat = Number(props.FROM_ROAD_LATITUDE);
+    const fromLon = Number(props.FROM_ROAD_LONGITUDE);
+    const toLat = Number(props.TO_ROAD_LATITUDE);
+    const toLon = Number(props.TO_ROAD_LONGITUDE);
+
+    if ([fromLat, fromLon, toLat, toLon].every(v => Number.isFinite(v))) {
+      const b = lineBufferFeature(fromLon, fromLat, toLon, toLat, bufferMeters, props);
+      if (b) { 
+        if (b.type === 'Feature') { b.properties = props; buffered.push(b); }
+        else if (b.type === 'FeatureCollection' && Array.isArray(b.features)) {
+          for (const bf of b.features) { bf.properties = props; buffered.push(bf); }
+        } else {
+          try { buffered.push({ type:'Feature', properties: f.properties||{}, geometry: f.geometry||f }); } catch(e){console.warn('unexpected buffer type', e);} 
+        }
+      }
+    } else if (feat.geometry && (feat.geometry.type === 'LineString' || feat.geometry.type === 'MultiLineString' || feat.geometry.type === 'Polygon')) {
+      try { 
+        const b = turf.buffer(feat, bufferMeters, { units:'meters' }); 
+        if (b) { 
+          if (b.type === 'Feature') { b.properties = props; buffered.push(b); }
+          else if (b.type === 'FeatureCollection') {
+            for (const bf of b.features) { bf.properties = props; buffered.push(bf); }
+          }
+        }
+      } catch(e){ console.warn('fallback buffer error', e); }
+    } else {
+      // can't buffer - skip gracefully
+    }
+  }
+  return { type:'FeatureCollection', features: buffered.map(f => (f && f.type==='Feature' ? f : { type:'Feature', properties: f.properties||{}, geometry: f.geometry||f })) };
+}
+
+/* Manual closures storage */
+function addManualClosureForSite(id, start, end, onsite_hours, work_period, description) {
+  if (!id) return;
+  const c = { start: parseDateValue(start), end: parseDateValue(end), onsite_hours: onsite_hours ? String(onsite_hours) : '', work_period, description };
+  if (!manualClosures[id]) manualClosures[id] = [];
+  manualClosures[id].push(c);
+}
+
+/* Reason formatting helpers (slightly adjusted for popup truncation) */
+function formatDateForLabel(d) { if (!d) return 'N/A'; try { return d.toLocaleDateString(); } catch(e) { return String(d); } }
+function escapeHtml(s) { if (s == null) return ''; return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+
+function formatRodarReason(r) {
+  const desc = r.DESCRIPTION || r.CLOSURE_LOCATION || r.CLOSURE_ID || r.DESCR || r.Notes || '';
+  const start = parseDateValue(r.START_DATE) || parseDateValue(r.PLAN_START_LOCAL) || parseDateValue(r.PLAN_START_UTC) || parseDateValue(r.DATA_LOCAL_TIME);
+  const end = parseDateValue(r.END_DATE) || parseDateValue(r.PLAN_END_LOCAL) || parseDateValue(r.PLAN_END_UTC);
+  const sStr = start ? formatDateForLabel(start) : 'N/A';
+  const eStr = end ? formatDateForLabel(end) : 'N/A';
+  let out = `• ${escapeHtml(String(desc || r.CLOSURE_ID || 'Closure'))} (${sStr} → ${eStr})`;
+  const hours = r.ONSITE_HOURS || r.ONSITE_HOUR || r.ONSITE || r.ONSITE_HOURS;
+  const wp = r.WORK_PERIOD || r.Work_Period || r.work_period || r.WORK_EVENT_TYPE || r.WORK_PERIOD;
+  if (hours || wp) { out += `<br/>Hours: ${escapeHtml(String(hours || ''))}${hours && wp ? ' ' : ''}${escapeHtml(String(wp || ''))}`; }
+  return out;
+}
+function formatManualReason(m) {
+  const sStr = m.start ? formatDateForLabel(m.start) : 'N/A';
+  const eStr = m.end ? formatDateForLabel(m.end) : 'N/A';
+  let label = m.description || m.descriptionText || m.desc || m.CLOSURE_ID || 'Manual closure';
+  let out = `• [Manual] ${escapeHtml(String(label))} (${sStr} → ${eStr})`;
+  if (m.onsite_hours) out += `<br/>Onsite Hours: ${escapeHtml(String(m.onsite_hours))}`;
+  if (m.onsite_hours && m.onsite_hours.indexOf('Continuous')>=0) out += ' (Continuous)';
+  if (m.onsite_hours) { const p = parseOnsiteHoursField(m.onsite_hours); if (p && p.type) out += `<br/>Type: ${escapeHtml(p.type)}`; }
+  return out;
+}
+
+/* Point-in-polygon checks */
+function isSiteImpactedByBuffered(siteLat, siteLon, bufferedCollection) {
+  if (!bufferedCollection || !Array.isArray(bufferedCollection.features)) return { impacted:false, reasons:[] };
+  const pt = turf.point([siteLon, siteLat]);
+  const reasons = [];
+  for (const feat of bufferedCollection.features) {
+    try { if (feat && turf.booleanPointInPolygon(pt, feat)) reasons.push(feat.properties || {}); } catch(e){ console.warn('pip check failed', e); }
+  }
+  return { impacted: reasons.length>0, reasons };
+}
+
+function isSiteImpactedByManual(siteId, referenceDateTime) {
+  const reasons = [];
+  for (const c of (manualClosures[siteId] || [])) {
+    if (!activeAtReference(c.start, c.end, referenceDateTime)) continue;
+    if (c.onsite_hours) { if (!isReferenceWithinOnsiteHours(c.onsite_hours, referenceDateTime)) continue; }
+    reasons.push(c);
+  }
+  return { impacted: reasons.length>0, reasons };
+}
+
+/* RENDER */
+function renderClosures(c) { closurePolygonsLayer.clearLayers(); if (c && c.features) closurePolygonsLayer.addData(c); }
+
+function renderSites(referenceDateTime) {
+  sitesLayer.clearLayers();
+  let impactedCount = 0;
+  for (const row of sites) {
+    const lat = parseFloat(row.lat || row.Lat || row.latitude || row.Latitude || row.lat_dd);
+    const lon = parseFloat(row.lon || row.Lon || row.lng || row.Longitude || row.lon_dd);
+    const id = (row.id || row.ID || row.asset_id || row.AssetID || row.name || row.Name || '').toString();
+    const displayName = row.name || row.Name || row.id || row.ID || id || 'Site';
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+
+    const ref = referenceDateTime || new Date();
+    const rodarCheck = isSiteImpactedByBuffered(lat, lon, closuresBufferedCollection);
+    const manualCheck = isSiteImpactedByManual(id, ref);
+
+    let embeddedReasons = [];
+    const embeddedStart = row['Start Date'] || row['start_date'] || row['Start_Date'] || row['startDate'] || row['START_DATE'] || row['START'];
+    const embeddedEnd = row['End Date'] || row['end_date'] || row['End_Date'] || row['endDate'] || row['END_DATE'] || row['END'];
+    const embeddedOnsite = row['Onsite Hours'] || row['Onsite_Hours'] || row['onsite_hours'] || row['ONSITE_HOURS'];
+    if (embeddedStart || embeddedEnd) {
+      const s = parseDateValue(embeddedStart);
+      const e = parseDateValue(embeddedEnd);
+      if (activeAtReference(s,e,ref)) {
+        if (embeddedOnsite) {
+          if (isReferenceWithinOnsiteHours(String(embeddedOnsite), ref)) {
+            embeddedReasons.push({ start: s, end: e, onsite_hours: embeddedOnsite, description: row['Description'] || row['description'] });
+          }
+        } else {
+          embeddedReasons.push({ start: s, end: e, onsite_hours: '', description: row['Description'] || row['description'] });
+        }
+      }
+    }
+
+    const rodarFormatted = rodarCheck.reasons.map(r => ({ SOURCE:'RODAR', text: formatRodarReason(r) }));
+    const manualFormatted = manualCheck.reasons.map(m => ({ SOURCE:'MANUAL', text: formatManualReason(m) }));
+    const embeddedFormatted = embeddedReasons.map(m => ({ SOURCE:'MANUAL_EMBED', text: formatManualReason(m) }));
+
+    const allFormatted = [...rodarFormatted, ...manualFormatted, ...embeddedFormatted];
+
+    const impacted = allFormatted.length > 0;
+    if (impacted) impactedCount++;
+
+    const color = impacted ? 'red' : 'green';
+    const radius = (isTouch && isPhoneWidth()) ? MARKER_RADIUS_PHONE : DEFAULT_MARKER_RADIUS;
+    const marker = L.circleMarker([lat, lon], { radius: radius, fillColor: color, color:'#000', weight:1, fillOpacity:0.95 }).addTo(sitesLayer);
+
+    // Build popup with truncation: show up to 2 reasons, the rest hidden behind a "More" toggle
+    let html = `<strong>${escapeHtml(displayName)}</strong><br/>Status: <strong style="color:${color}">${impacted ? 'Closed — active at selected time' : 'Open'}</strong><br/>`;
+    if (allFormatted.length) {
+      html += '<em>Closures affecting this site:</em><br/>';
+      const shortCount = 2;
+      const uid = 'r_'+Math.random().toString(36).slice(2,9);
+      allFormatted.forEach((f, idx) => {
+        const safe = f.text;
+        if (idx < shortCount) html += `<span class="site-popup-reason">${safe}</span>`;
+        else html += `<div class="site-popup-reason" id="${uid}_more_${idx}" style="display:none">${safe}</div>`;
+      });
+      if (allFormatted.length > shortCount) html += `<span class="site-popup-more" onclick="(function(id){const nodes=document.querySelectorAll('[id^="'+id+'_more_"];'); for(const n of nodes){ n.style.display = (n.style.display==='none')? 'block':'none' } })(\'${uid}\')">Show more</span>`;
+    }
+    html += '<br/><small>Tap marker for details. Use Refresh to re-check.</small>';
+
+    marker.bindPopup(html, { maxWidth: 360 });
+
+    marker._siteId = id;
+    marker._siteName = displayName;
+  }
+  const countText = `Checked ${sites.length} site(s). ${impactedCount} impacted at selected time.`;
+  const displayRef = referenceDateTime ? referenceDateTime.toLocaleString() : new Date().toLocaleString();
+  document.getElementById('statusLine').textContent = `${countText} (evaluated for: ${displayRef})`;
+}
+
+/* LIST RENDER (unchanged aside from using isPhoneWidth if needed) */
+function renderList(referenceDateTime) {
+  const container = document.getElementById('listContainer');
+  container.innerHTML = '';
+  const ref = referenceDateTime || new Date();
+  const impactedRows = [];
+
+  for (const row of sites) {
+    const lat = parseFloat(row.lat || row.Lat || row.latitude || row.Latitude || row.lat_dd);
+    const lon = parseFloat(row.lon || row.Lon || row.lng || row.Longitude || row.lon_dd);
+    const id = (row.id || row.ID || row.asset_id || row.AssetID || row.name || row.Name || '').toString();
+    const displayName = row.name || row.Name || row.id || row.ID || id || 'Site';
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+
+    const rodarCheck = isSiteImpactedByBuffered(lat, lon, closuresBufferedCollection);
+    const manualCheck = isSiteImpactedByManual(id, ref);
+
+    let embeddedReasons = [];
+    const embeddedStart = row['Start Date'] || row['start_date'] || row['Start_Date'] || row['startDate'] || row['START_DATE'] || row['START'];
+    const embeddedEnd = row['End Date'] || row['end_date'] || row['End_Date'] || row['endDate'] || row['END_DATE'] || row['END'];
+    const embeddedOnsite = row['Onsite Hours'] || row['Onsite_Hours'] || row['onsite_hours'] || row['ONSITE_HOURS'];
+    if (embeddedStart || embeddedEnd) {
+      const s = parseDateValue(embeddedStart);
+      const e = parseDateValue(embeddedEnd);
+      if (activeAtReference(s,e,ref)) {
+        if (embeddedOnsite) {
+          if (isReferenceWithinOnsiteHours(String(embeddedOnsite), ref)) {
+            embeddedReasons.push({ start: s, end: e, onsite_hours: embeddedOnsite, description: row['Description'] || row['description'] });
+          }
+        } else {
+          embeddedReasons.push({ start: s, end: e, onsite_hours: '', description: row['Description'] || row['description'] });
+        }
+      }
+    }
+
+    const allReasons = [];
+    for (const r of rodarCheck.reasons) { allReasons.push({ source:'RODAR', onsite: r.ONSITE_HOURS || r.ONSITE_HOUR || r.ONSITE || '' , raw: r }); }
+    for (const m of manualCheck.reasons) { allReasons.push({ source:'MANUAL', onsite: m.onsite_hours || '', raw: m }); }
+    for (const em of embeddedReasons) { allReasons.push({ source:'EMBED', onsite: em.onsite_hours || '', raw: em }); }
+
+    if (allReasons.length) {
+      const onsiteVals = Array.from(new Set(allReasons.map(x => (x.onsite || '').trim()).filter(Boolean)));
+      impactedRows.push({ id, name: displayName, lat, lon, onsiteVals, reasons: allReasons });
+    }
+  }
+
+  if (!impactedRows.length) {
+    container.innerHTML = '<div class="list-empty">No sites are impacted at the selected time.</div>';
+    return;
+  }
+
+  const table = document.createElement('table');
+  table.className = 'list-table';
+  const thead = document.createElement('thead');
+  thead.innerHTML = '<tr><th>Sites</th><th>Time</th><th></th></tr>';
+  table.appendChild(thead);
+  const tbody = document.createElement('tbody');
+
+  for (const r of impactedRows) {
+    const tr = document.createElement('tr');
+    const tdName = document.createElement('td');
+    tdName.innerHTML = `<strong>${escapeHtml(r.name)}</strong><br/><small>${escapeHtml(r.id)}</small>`;
+
+    const tdTime = document.createElement('td');
+    if (r.onsiteVals.length) tdTime.innerHTML = escapeHtml(r.onsiteVals.join('\n'));
+    else tdTime.innerHTML = '<small>N/A</small>';
+
+    const tdAction = document.createElement('td');
+    const btn = document.createElement('button');
+    btn.className = 'view-map-btn';
+    btn.type = 'button';
+    btn.textContent = 'View on map';
+    btn.addEventListener('click', () => {
+      showMapView();
+      map.setView([r.lat, r.lon], 17);
+      sitesLayer.eachLayer(layer => { if (layer._siteId === r.id || layer._siteName === r.name) { if (layer.openPopup) layer.openPopup(); }});
+    });
+    tdAction.appendChild(btn);
+
+    tr.appendChild(tdName);
+    tr.appendChild(tdTime);
+    tr.appendChild(tdAction);
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  container.appendChild(table);
+}
+
+function showListView() {
+  isListView = true;
+  document.getElementById('listContainer').style.display = 'block';
+  document.getElementById('listContainer').setAttribute('aria-hidden', 'false');
+  document.getElementById('map').style.display = 'none';
+  document.getElementById('toggleViewBtn').textContent = 'Map view';
+  renderList(overrideDateTime);
+}
+function showMapView() {
+  isListView = false;
+  document.getElementById('listContainer').style.display = 'none';
+  document.getElementById('listContainer').setAttribute('aria-hidden', 'true');
+  document.getElementById('map').style.display = 'block';
+  document.getElementById('toggleViewBtn').textContent = 'List view';
+  setTimeout(() => { try { map.invalidateSize(); } catch(e){} }, 250);
+}
+
+/* SEARCH UI (desktop suggestions reused for overlay) */
+const searchInput = document.getElementById('searchInput');
+const suggestionsEl = document.getElementById('suggestions');
+function buildSiteIndex() {
+  return sites
+    .map(r => ({ id: (r.id || r.ID || r.asset_id || r.AssetID || r.name || r.Name || '').toString(), name: (r.name || r.Name || r.id || r.ID || '').toString(), lat: parseFloat(r.lat || r.Lat || r.latitude || r.Latitude || r.lat_dd), lon: parseFloat(r.lon || r.Lon || r.lng || r.Longitude || r.lon_dd) }))
+    .filter(s => s.name && Number.isFinite(s.lat) && Number.isFinite(s.lon));
+}
+let siteIndex = [];
+function showSuggestions(q) {
+  const ql = (q || '').trim().toLowerCase();
+  if (!ql) { suggestionsEl.style.display = 'none'; return; }
+  const results = siteIndex.filter(s => s.name.toLowerCase().includes(ql) || s.id.toLowerCase().includes(ql)).slice(0,20);
+  if (!results.length) { suggestionsEl.style.display = 'none'; return; }
+  suggestionsEl.innerHTML = '';
+  for (const r of results) {
+    const div = document.createElement('div');
+    div.innerHTML = `<strong>${escapeHtml(r.name)}</strong><div class="muted">${escapeHtml(r.id)} — ${r.lat.toFixed(5)}, ${r.lon.toFixed(5)}</div>`;
+    div.addEventListener('click', () => {
+      showMapView();
+      map.setView([r.lat, r.lon], 17);
+      sitesLayer.eachLayer(layer => { if (layer._siteId === r.id || layer._siteName === r.name) { if (layer.openPopup) layer.openPopup(); }});
+      suggestionsEl.style.display = 'none';
+      searchInput.value = r.name;
+    });
+    suggestionsEl.appendChild(div);
+  }
+  suggestionsEl.style.display = 'block';
+}
+let searchTimeout = null;
+searchInput.addEventListener('input', (e) => { clearTimeout(searchTimeout); searchTimeout = setTimeout(() => showSuggestions(e.target.value), 120); });
+document.addEventListener('click', (ev) => { if (!document.getElementById('controls').contains(ev.target)) suggestionsEl.style.display = 'none'; });
+searchInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { const q = searchInput.value.trim().toLowerCase(); if (!q) return; const first = siteIndex.find(s => s.name.toLowerCase().includes(q) || s.id.toLowerCase().includes(q)); if (first) { showMapView(); map.setView([first.lat, first.lon], 17); sitesLayer.eachLayer(layer => { if (layer._siteId === first.id || layer._siteName === first.name) { if (layer.openPopup) layer.openPopup(); }}); suggestionsEl.style.display = 'none'; } } });
+
+/* overlay search behavior (mobile focused) */
+const miniToolbar = document.getElementById('miniToolbar');
+const miniSearchBtn = document.getElementById('miniSearchBtn');
+const searchOverlay = document.getElementById('searchOverlay');
+const overlayInput = document.getElementById('overlaySearchInput');
+const overlaySuggestions = document.getElementById('overlaySuggestions');
+
+function showOverlaySearch() {
+  searchOverlay.style.display = 'block';
+  searchOverlay.setAttribute('aria-hidden','false');
+  overlayInput.value = '';
+  overlaySuggestions.style.display = 'none';
+  setTimeout(() => overlayInput.focus(), 50);
+}
+function hideOverlaySearch() {
+  searchOverlay.style.display = 'none';
+  searchOverlay.setAttribute('aria-hidden','true');
+}
+
+overlayInput.addEventListener('input', (e) => {
+  const val = e.target.value.trim();
+  if (!val) { overlaySuggestions.style.display='none'; return; }
+  const results = siteIndex.filter(s => s.name.toLowerCase().includes(val.toLowerCase()) || s.id.toLowerCase().includes(val.toLowerCase())).slice(0,20);
+  if (!results.length) { overlaySuggestions.style.display='none'; return; }
+  overlaySuggestions.innerHTML = '';
+  for (const r of results) {
+    const div = document.createElement('div');
+    div.innerHTML = `<strong>${escapeHtml(r.name)}</strong><div class=\"muted\">${escapeHtml(r.id)} — ${r.lat.toFixed(5)}, ${r.lon.toFixed(5)}</div>`;
+    div.addEventListener('click', () => {
+      hideOverlaySearch();
+      showMapView();
+      map.setView([r.lat, r.lon], 17);
+      sitesLayer.eachLayer(layer => { if (layer._siteId === r.id || layer._siteName === r.name) { if (layer.openPopup) layer.openPopup(); }});
+    });
+    overlaySuggestions.appendChild(div);
+  }
+  overlaySuggestions.style.display = 'block';
+});
+
+searchOverlay.addEventListener('click', (ev) => { if (ev.target === searchOverlay) hideOverlaySearch(); });
+miniSearchBtn.addEventListener('click', showOverlaySearch);
+
+/* CSV loaders and main flow (unchanged, with cache-busting) */
+async function loadCSVText(url) {
+  const urlWithBuster = url + (url.includes('?') ? '&' : '?') + 't=' + Date.now();
+  const r = await fetchWithTimeout(urlWithBuster, { cache:'no-store', headers: { 'Cache-Control': 'no-cache' } }, 10000);
+  if (!r.ok) throw new Error('Failed to fetch CSV: ' + r.status + ' ' + r.statusText);
+  return await r.text();
+}
+
+async function loadAll() {
+  document.getElementById('statusLine').textContent = 'Fetching RODAR and CSV(s)...';
+  manualClosures = {};
+  sites = [];
+  closuresBufferedCollection = { type:'FeatureCollection', features: [] };
+  try {
+    const ref = overrideDateTime || new Date();
+
+    // 1) Fetch RODAR (if configured). Use timeout and graceful fallback.
+    if (RODAR_GEOJSON_URL && RODAR_GEOJSON_URL.trim() !== '') {
+      try {
+        document.getElementById('statusLine').textContent = 'Fetching RODAR (geojson)...';
+        const r = await fetchWithTimeout(RODAR_GEOJSON_URL, { cache:'no-store' }, 10000);
+        if (!r.ok) throw new Error('Failed to fetch RODAR: ' + r.status + ' ' + r.statusText);
+        const closuresGeojson = await r.json();
+        if (!closuresGeojson || !closuresGeojson.features) {
+          console.warn('RODAR returned unexpected geojson, proceeding with empty closures.');
+          closuresBufferedCollection = { type:'FeatureCollection', features: [] };
+        } else {
+          closuresBufferedCollection = buildBufferedClosuresFromGeojson(closuresGeojson, BUFFER_METERS, ref);
+        }
+        renderClosures(closuresBufferedCollection);
+      } catch (err) {
+        console.warn('RODAR fetch failed or blocked by CORS/timeout:', err);
+        document.getElementById('statusLine').textContent = 'RODAR fetch failed (CORS/timeout). Loading CSVs only — see console for details.';
+        closuresBufferedCollection = { type:'FeatureCollection', features: [] };
+      }
+    } else {
+      closuresBufferedCollection = { type:'FeatureCollection', features: [] };
+    }
+
+    // 2) Load locations CSV
+    if (!LOCATIONS_CSV_URL) { document.getElementById('statusLine').textContent = 'No CSV URL configured. Please set LOCATIONS_CSV_URL in the HTML.'; return; }
+    document.getElementById('statusLine').textContent = 'Fetching locations CSV...';
+    const csvText = await loadCSVText(LOCATIONS_CSV_URL);
+    const parsed = Papa.parse(csvText, { header:true, skipEmptyLines:true });
+    sites = parsed.data || [];
+
+    // read embedded manual closures
+    for (const row of sites) {
+      const id = (row.id || row.ID || row.asset_id || row.AssetID || row.name || row.Name || '').toString();
+      const start = row['Start Date'] || row['start_date'] || row['Start_Date'] || row['startDate'] || row['START_DATE'] || row['START'];
+      const end = row['End Date'] || row['end_date'] || row['End_Date'] || row['endDate'] || row['END_DATE'] || row['END'];
+      const onsite = row['Onsite Hours'] || row['Onsite_Hours'] || row['onsite_hours'] || row['ONSITE_HOURS'];
+      const wp = row['Work Period'] || row['work_period'] || row['WORK_PERIOD'];
+      const desc = row['Description'] || row['description'] || row['DESCRIPTION'];
+      if (start || end) addManualClosureForSite(id, start, end, onsite, wp, desc);
+    }
+
+    // 3) Optional: additional manual closures CSV
+    if (MANUAL_CLOSURES_CSV_URL) {
+      try {
+        const manualText = await loadCSVText(MANUAL_CLOSURES_CSV_URL);
+        const parsedM = Papa.parse(manualText, { header:true, skipEmptyLines:true });
+        for (const r of (parsedM.data || [])) {
+          const id = (r.id || r.ID || r.asset_id || r.AssetID || r.name || r.Name || '').toString();
+          const start = r['start_date'] || r['Start Date'] || r['start'] || r['Start'];
+          const end = r['end_date'] || r['End Date'] || r['end'] || r['End'];
+          addManualClosureForSite(id, start, end, r['onsite_hours'] || r['Onsite Hours'] || r['Onsite_Hours'] || r['OnsiteHours'], r['work_period'] || r['Work Period'], r['description'] || r['Description']);
+        }
+      } catch (err) { console.warn('Manual CSV failed:', err); }
+    }
+
+    siteIndex = buildSiteIndex();
+    renderSites(overrideDateTime);
+    if (isListView) renderList(overrideDateTime);
+
+    // show/hide mini toolbar based on width
+    updateMiniToolbarVisibility();
+  } catch (err) {
+    console.error(err);
+    document.getElementById('statusLine').textContent = 'Error: ' + (err.message || err);
+  }
+}
+
+/* override date/time UI handlers - desktop keeps inputs, mobile uses single button + native picker */
+const overrideDateEl = document.getElementById('overrideDate');
+const overrideTimeEl = document.getElementById('overrideTime');
+const applyBtn = document.getElementById('applyOverride');
+const clearBtn = document.getElementById('clearOverride');
+
+function setMinDateTimeInputs() {
+  const now = new Date();
+  const yyyy = now.getFullYear();
+  const mm = String(now.getMonth()+1).padStart(2,'0');
+  const dd = String(now.getDate()).padStart(2,'0');
+  overrideDateEl.min = `${yyyy}-${mm}-${dd}`;
+}
+
+applyBtn.addEventListener('click', () => {
+  const d = overrideDateEl.value; const t = overrideTimeEl.value;
+  if (!d || !t) { alert('Please choose both date and time (future only).'); return; }
+  const dt = new Date(d + 'T' + t);
+  const now = new Date();
+  if (isNaN(dt)) { alert('Invalid date/time'); return; }
+  if (dt.getTime() <= now.getTime()) { alert('Please choose a future date/time.'); return; }
+  overrideDateTime = dt;
+  loadAll();
+});
+
+clearBtn.addEventListener('click', () => { overrideDateTime = null; overrideDateEl.value = ''; overrideTimeEl.value = ''; loadAll(); });
+
+/* mobile single-button datetime-local flow */
+function openMobileDateTimePicker() {
+  // create a hidden input datetime-local to trigger native picker
+  let mobileInput = document.getElementById('mobileDatetimeLocal');
+  if (!mobileInput) {
+    mobileInput = document.createElement('input');
+    mobileInput.type = 'datetime-local';
+    mobileInput.id = 'mobileDatetimeLocal';
+    mobileInput.style.position = 'fixed';
+    mobileInput.style.left = '-9999px';
+    document.body.appendChild(mobileInput);
+    const now = new Date();
+    const yyyy = now.getFullYear();
+    const mm = String(now.getMonth()+1).padStart(2,'0');
+    const dd = String(now.getDate()).padStart(2,'0');
+    const hh = String(now.getHours()).padStart(2,'0');
+    const min = String(now.getMinutes()).padStart(2,'0');
+    mobileInput.min = `${yyyy}-${mm}-${dd}T${hh}:${min}`;
+    mobileInput.addEventListener('change', (e) => {
+      const val = e.target.value; if (!val) return;
+      const dt = new Date(val);
+      if (isNaN(dt)) { alert('Invalid date/time'); return; }
+      const now2 = new Date(); if (dt.getTime() <= now2.getTime()) { alert('Please choose a future date/time.'); return; }
+      overrideDateTime = dt;
+      // keep UI consistent: set desktop inputs too
+      try {
+        overrideDateEl.value = val.split('T')[0];
+        overrideTimeEl.value = val.split('T')[1] || '';
+      } catch(e){}
+      loadAll();
+    });
+  }
+  mobileInput.click();
+}
+
+/* initial setup */
+setMinDateTimeInputs();
+
+/* wire up controls */
+document.getElementById('refreshBtn').addEventListener('click', () => loadAll());
+document.getElementById('bufferSelect').addEventListener('change', (ev) => { BUFFER_METERS = Number(ev.target.value || 30); loadAll(); });
+
+document.getElementById('toggleViewBtn').addEventListener('click', (ev) => {
+  if (isListView) showMapView(); else showListView();
+});
+
+/* mini toolbar actions */
+const miniRefreshBtn = document.getElementById('miniRefreshBtn');
+const miniBufferBtn = document.getElementById('miniBufferBtn');
+const miniExpandBtn = document.getElementById('miniExpandBtn');
+miniRefreshBtn.addEventListener('click', () => loadAll());
+miniBufferBtn.addEventListener('click', () => {
+  // show buffer select briefly
+  const el = document.getElementById('bufferSelect');
+  el.focus();
+  // on some platforms, focus will open native select UI. otherwise user can open full panel.
+});
+miniExpandBtn.addEventListener('click', () => {
+  // show the full panel as a bottom sheet
+  const panel = document.getElementById('controls');
+  panel.classList.toggle('bottom-sheet');
+  panel.style.display = panel.classList.contains('bottom-sheet') ? 'block' : 'none';
+});
+
+/* make mini toolbar visible when on phone */
+function updateMiniToolbarVisibility() {
+  const mt = document.getElementById('miniToolbar');
+  const panel = document.getElementById('controls');
+  if (isPhoneWidth()) { mt.style.display = 'flex'; panel.style.display = 'none'; }
+  else { mt.style.display = 'none'; if (!panel.classList.contains('bottom-sheet')) panel.style.display = 'block'; }
+}
+window.addEventListener('resize', () => { updateMiniToolbarVisibility(); });
+
+/* wire search overlay open from both mini and main search focus */
+searchInput.addEventListener('focus', () => { if (isPhoneWidth()) showOverlaySearch(); });
+
+/* overlay search icon already wired; hook overlay close on Escape */
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { hideOverlaySearch(); } });
+
+/* mini "Check time" behavior: replace date+time inputs on small screens with single picker */
+// Add a small dedicated button to the bottom sheet / mini toolbar by intercepting click on panel
+const mobileCheckBtn = document.createElement('button');
+mobileCheckBtn.textContent = 'Check time';
+mobileCheckBtn.style.marginLeft = '8px';
+mobileCheckBtn.addEventListener('click', openMobileDateTimePicker);
+// append to bottom-sheet when expanded so users can find it on mobile
+const controlsPanel = document.getElementById('controls');
+controlsPanel.appendChild(mobileCheckBtn);
+
+// also provide quick access from mini toolbar (optional)
+const miniQuickCheck = document.createElement('button');
+miniQuickCheck.textContent = '⏱';
+miniQuickCheck.title = 'Check time';
+miniQuickCheck.style.border = 'none';
+miniQuickCheck.style.background = 'transparent';
+miniQuickCheck.style.padding = '8px';
+miniQuickCheck.addEventListener('click', openMobileDateTimePicker);
+miniToolbar.appendChild(miniQuickCheck);
+
+/* initial load */
+loadAll();
+
+</script>
+</body>
+</html>
